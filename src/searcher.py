@@ -1,24 +1,36 @@
 import requests
-import json
-import urllib.parse
+import time
 
 def ask_ai(prompt):
     """
-    Sends a request to text.pollinations.ai with the given prompt.
+    Sends a POST request to text.pollinations.ai with the given prompt.
+    Retries up to 3 times with a 10s timeout on failure.
+    Returns (success: bool, response: str).
     """
-    # pollinations.ai accepts prompt in the URL path for GET requests
-    # e.g., https://text.pollinations.ai/prompt
+    url = "https://text.pollinations.ai/"
+    payload = {
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "model": "openai"
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
 
-    encoded_prompt = urllib.parse.quote(prompt)
-    url = f"https://text.pollinations.ai/{encoded_prompt}"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            response.raise_for_status()
+            return True, response.text
+        except requests.exceptions.RequestException as e:
+            if attempt == max_retries - 1:
+                return False, ""
+            time.sleep(1) # wait a bit before retrying
 
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        print(f"Error querying AI: {e}")
-        return f"Ошибка при получении данных: {e}"
+    return False, ""
 
 if __name__ == "__main__":
-    print(ask_ai("Привет, кто ты?"))
+    success, text = ask_ai("Привет, кто ты?")
+    print(f"Success: {success}\nText: {text}")
