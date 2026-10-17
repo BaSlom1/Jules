@@ -9,7 +9,7 @@ except ImportError:
 
 from registry_manager import add_to_registry, remove_from_registry
 from analyzer import analyze_path
-from searcher import search
+from searcher import ask_ai
 
 # Common styling
 ctk.set_appearance_mode("Dark")
@@ -64,25 +64,12 @@ class SettingsWindow(ctk.CTk):
             self.destroy()
             show_popup(filepath)
 
-class ResultCard(ctk.CTkFrame):
-    def __init__(self, master, title, body, href, **kwargs):
-        super().__init__(master, **kwargs)
-        self.href = href
-
-        # Make the title a clickable link
-        self.title_label = ctk.CTkLabel(self, text=title, font=ctk.CTkFont(size=14, weight="bold"), text_color="#5ea8ff", cursor="hand2", anchor="w", justify="left", wraplength=400)
-        self.title_label.pack(anchor="w", padx=10, pady=(10, 0))
-        self.title_label.bind("<Button-1>", lambda e: webbrowser.open(self.href))
-
-        self.body_label = ctk.CTkLabel(self, text=body, anchor="w", justify="left", wraplength=400)
-        self.body_label.pack(anchor="w", padx=10, pady=(5, 10))
-
 class PopupWindow(ctk.CTk):
     def __init__(self, target_path):
         super().__init__()
         self.target_path = target_path
         self.title("ЧЗХ?")
-        self.geometry("480x550")
+        self.geometry("520x600")
 
         # Position near mouse cursor
         x = self.winfo_pointerx()
@@ -102,9 +89,11 @@ class PopupWindow(ctk.CTk):
         self.details_label = ctk.CTkLabel(self.info_frame, text="Ожидайте...", justify="left")
         self.details_label.pack(anchor="w", padx=10, pady=5)
 
-        # Scrollable Search Results
-        self.results_frame = ctk.CTkScrollableFrame(self)
-        self.results_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        # Main AI Text Area
+        self.text_area = ctk.CTkTextbox(self, font=ctk.CTkFont(size=14), wrap="word")
+        self.text_area.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.text_area.insert("0.0", "Ожидание ответа...")
+        self.text_area.configure(state="disabled")
 
         # Buttons Frame
         self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -112,7 +101,7 @@ class PopupWindow(ctk.CTk):
         self.btn_frame.grid_columnconfigure(0, weight=1)
         self.btn_frame.grid_columnconfigure(1, weight=1)
 
-        self.btn_google = ctk.CTkButton(self.btn_frame, text="Открыть в Google", state="disabled")
+        self.btn_google = ctk.CTkButton(self.btn_frame, text="Искать в Google", state="disabled")
         self.btn_google.grid(row=0, column=0, padx=5)
 
         self.btn_vt = ctk.CTkButton(self.btn_frame, text="Проверить на VirusTotal", state="disabled")
@@ -137,12 +126,36 @@ class PopupWindow(ctk.CTk):
         # Update UI with local info
         self.after(0, self.update_info, analysis)
 
-        # 2. Search
-        if self.search_query:
-            results = search(self.search_query)
-            self.after(0, self.update_results, results)
+        # 2. Prepare AI prompt
+        name = analysis.get("name", "")
+        size = analysis.get("size", "")
+        days = analysis.get("days_since_mod", "")
+
+        prompt = (f"Ты встроенная утилита Windows ЧЗХ. Объясни пользователю простым русским языком в 3 коротких пунктах (без воды и приветствий):\n"
+                  f"ЧТО ЭТО: что это за программа или папка и зачем она нужна (учитывай файлы внутри неё).\n"
+                  f"ЧТО ВНУТРИ: краткий вывод по крупным файлам и давности использования.\n"
+                  f"ВЕРДИКТ: можно ли это безопасно удалить и что произойдет при удалении.\n\n"
+                  f"Данные об объекте:\n"
+                  f"Название: {name}\n"
+                  f"Размер: {size}\n"
+                  f"Изменялся: {days} дней назад\n"
+                  f"Путь для контекста: {self.search_query}\n")
+
+        if analysis.get("is_dir"):
+            prompt += "Топ-5 файлов внутри:\n"
+            for f in analysis.get("top_files", []):
+                prompt += f"- {f['name']} ({f['size']})\n"
         else:
-            self.after(0, self.update_results_empty)
+            pe_meta = analysis.get("pe_metadata", {})
+            if pe_meta:
+                prompt += "Метаданные PE:\n"
+                for k, v in pe_meta.items():
+                    if k in ["ProductName", "CompanyName", "FileDescription"]:
+                        prompt += f"- {k}: {v}\n"
+
+        # 3. Query AI
+        ai_response = ask_ai(prompt)
+        self.after(0, self.update_ai_response, ai_response)
 
     def update_error(self, err_msg):
         self.name_label.configure(text="Ошибка")
@@ -175,24 +188,11 @@ class PopupWindow(ctk.CTk):
         if self.sha256:
             self.btn_vt.configure(state="normal", command=lambda: webbrowser.open(f"https://www.virustotal.com/gui/file/{self.sha256}"))
 
-    def update_results(self, results):
-        # Clear existing
-        for widget in self.results_frame.winfo_children():
-            widget.destroy()
-
-        if not results:
-            ctk.CTkLabel(self.results_frame, text="Ничего не найдено").pack(pady=20)
-            return
-
-        for r in results:
-            card = ResultCard(self.results_frame, title=r["title"], body=r["body"], href=r["href"])
-            card.pack(fill="x", pady=5)
-
-    def update_results_empty(self):
-        for widget in self.results_frame.winfo_children():
-            widget.destroy()
-        ctk.CTkLabel(self.results_frame, text="Не удалось сформировать поисковый запрос").pack(pady=20)
-
+    def update_ai_response(self, text):
+        self.text_area.configure(state="normal")
+        self.text_area.delete("0.0", "end")
+        self.text_area.insert("0.0", text)
+        self.text_area.configure(state="disabled")
 
 def show_settings(exe_path):
     app = SettingsWindow(exe_path)
